@@ -32,8 +32,8 @@ static startPos getStartPos(int *threads,int curThread, int boardSize){
 		pos.row = 0;
 		return pos;
 	}
-	pos.row = (threads[curThread]/boardSize)-1;
-	pos.col = (prevSteps%boardSize)-1;
+	pos.row = (threads[curThread]/boardSize);
+	pos.col = (threads[curThread]%boardSize);
 	
 	return pos;
 }
@@ -53,7 +53,7 @@ static int *getThreadSteps(int boardSize, int threads){
 
 	for (int i=0;i<threads;i++){
 		//Give each thread a proportional amount of threads
-		threadSteps[i] += i*(totalSteps/threads);
+		threadSteps[i] = i*(totalSteps/threads)+1;
 		
 		//Any remaining steps due to uneven division distribute among threads 
 		if (extraSteps > 0){
@@ -252,14 +252,21 @@ int main(int argc, char **argv){
 	printf("procNum:%d\tboardSize:%d\ttileSize:%d\tcolourDen:%d\tmaxSteps:%d\trandSeed:%d\tinterMode:%d\n"
 		,procNum,boardSize,tileSize,colourDen,maxSteps,randSeed,interMode);
 
-	board = createBoard(boardSize,randSeed);
-	threadSteps = getThreadSteps(boardSize,procNum);
-
-
+	board = createBoard(boardSize,randSeed);			//Generate the board
+	threadSteps = getThreadSteps(boardSize,procNum);	//Get the number of steps each thread will perform
+	
+	//Get starting position for each thread
+	startingPos = malloc(sizeof(startPos)*procNum);		
 	for (int i=0;i<procNum;i++){
-		printf("Thread %d: starting step:%d\tstarting col:%d\tstarting row:%d\n",i,threadSteps[i],);
+		startingPos[i] = getStartPos(threadSteps,i,boardSize);
 	}
 
+	for (int i=0;i<procNum;i++){
+		printf("Thread %d: starting step:%d\tstarting col:%d\tstarting row:%d\n",i,threadSteps[i],startingPos[i].col,startingPos[i].row);
+	}
+
+	free(threadSteps);
+	free(startingPos);
 	freeBoard(boardSize,&board);
 
 	return 0;
