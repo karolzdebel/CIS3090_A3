@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -Wall -pedantic -std=c11
+CFLAGS = -g -Wall -pedantic -std=c11
 
 rbs: rbs.c
 clean:

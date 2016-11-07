@@ -18,13 +18,13 @@
 #define RED 1
 #define BLUE 2
 
-typedef struct startPos{
+typedef struct Position{
 	int col;
 	int row;
-}startPos;
+}Position;
 
-static startPos getStartPos(int *threads,int curThread, int boardSize){
-	startPos pos;
+static Position getPosition(int *threads,int curThread, int boardSize){
+	Position pos;
 	int prevSteps = 0;
 
 	if (curThread == 0){
@@ -53,7 +53,7 @@ static int *getThreadSteps(int boardSize, int threads){
 
 	for (int i=0;i<threads;i++){
 		//Give each thread a proportional amount of threads
-		threadSteps[i] = i*(totalSteps/threads)+1;
+		threadSteps[i] = i*(totalSteps/threads);
 		
 		//Any remaining steps due to uneven division distribute among threads 
 		if (extraSteps > 0){
@@ -99,51 +99,69 @@ static int **boardCopy(int size, int **board){
 	return boardCopy;
 }
 
-static void moveRed(int size, int row,int ***board){
+static void moveRed(Position pos, int steps, int size, int ***board){
 
 	int **copy = boardCopy(size,*board);
+	Position curPos = pos;
 
-	for (int i=0;i<size-1;i++){
-
-		//Move any reds with a white to the right
-		if (copy[row][i] == RED && copy[row][i+1] == WHITE){
-			(*board)[row][i] = WHITE; 
-			(*board)[row][i+1] = RED;
-		}
+	//Move reds in assigned positions
+	for (int i=0;i<steps;i++){
+		printf("row:%d,col:%d\n",curPos.row,curPos.col);
 		//Move last red if the first element is white(wrap around)
-		if (i==size-2){
-			if (copy[row][size-1] == RED && copy[row][0] == WHITE){
-				(*board)[row][size-1] = WHITE;
-				(*board)[row][0] = RED;
+		if (curPos.col == (size-1) ){
+			if (copy[curPos.row][curPos.col] == RED && copy[curPos.row][0] == WHITE){
+				(*board)[curPos.row][curPos.col] = WHITE;
+				(*board)[curPos.row][0] = RED;
 			}
+		}
+		//Move any reds with a white to the right
+		else if (copy[curPos.row][curPos.col] == RED && copy[curPos.row][curPos.col+1] == WHITE){
+			(*board)[curPos.row][curPos.col] = WHITE; 
+			(*board)[curPos.row][curPos.col+1] = RED;
+		}
+
+		//Check element to right if there are any left, otherwise go to next rows
+		if (curPos.col == (size-1) ){
+			curPos.row++;
+			curPos.col=0;
+		}
+		else{
+			curPos.col++;
 		}
 	}
 }
 
-static void moveBlue(int size, int col,int ***board){
+static void moveBlue(Position pos, int steps, int size, int ***board){
 
 	int **copy = boardCopy(size,*board);
+	Position curPos = pos;
 
-	for (int i=0;i<size-1;i++){
+	//Move blues in assigned positions
+	for (int i=0;i<steps;i++){
 
-		//Move any reds with a white to the right
-		if (copy[i][col] == BLUE && copy[i+1][col] == WHITE){
-			(*board)[i][col] = WHITE; 
-			(*board)[i+1][col] = BLUE;
-		}
-		//Move last red if the first element is white(wrap around)
-		if (i==size-2){
-			if (copy[size-1][col] == BLUE && copy[0][col] == WHITE){
-				(*board)[size-1][col] = WHITE;
-				(*board)[0][col] = BLUE;
+		//Move last blue if the first element is white(wrap around)
+		if (curPos.row == (size-1) ){
+			if (copy[curPos.row][curPos.col] == BLUE && copy[0][curPos.col] == WHITE){
+				(*board)[curPos.row][curPos.col] = WHITE;
+				(*board)[0][curPos.col] = BLUE;
 			}
+		}
+		//Move any blues with a white underneath
+		else if (copy[curPos.row][curPos.col] == BLUE && copy[curPos.row+1][curPos.col] == WHITE){
+			(*board)[curPos.row][curPos.col] = WHITE; 
+			(*board)[curPos.row+1][curPos.col] = BLUE;
+		}
+
+		//Check element to right if there are any left, otherwise go to next rows
+		if (curPos.row == (size-1) ){
+			curPos.col++;
+			curPos.row=0;
+		}
+		else{
+			curPos.row++;
 		}
 	}
 }
-
-// static bool checkThreshold(int size, int threshold, int **board){
-
-// }
 
 static int **createBoard(int size, int seed){
 	int **board = malloc(sizeof(int*)*size);
@@ -177,7 +195,7 @@ int main(int argc, char **argv){
 	bool interMode = false;	// i: optional interactive mode switch
 	int **board;			// Board with white, red or blue positions
 	int *threadSteps;		// How many steps each thread will executing
-	startPos *startingPos;  // What row and column each thread will begin computation at
+	Position *startingPos;  // What row and column each thread will begin computation at
 
 	//Get all program parameters from arguments
 	for (int i=1;i<argc;i++){
@@ -256,14 +274,40 @@ int main(int argc, char **argv){
 	threadSteps = getThreadSteps(boardSize,procNum);	//Get the number of steps each thread will perform
 	
 	//Get starting position for each thread
-	startingPos = malloc(sizeof(startPos)*procNum);		
+	startingPos = malloc(sizeof(Position)*procNum);		
 	for (int i=0;i<procNum;i++){
-		startingPos[i] = getStartPos(threadSteps,i,boardSize);
+		startingPos[i] = getPosition(threadSteps,i,boardSize);
 	}
 
 	for (int i=0;i<procNum;i++){
 		printf("Thread %d: starting step:%d\tstarting col:%d\tstarting row:%d\n",i,threadSteps[i],startingPos[i].col,startingPos[i].row);
 	}
+
+	printf("-----Board before----\n");
+	printBoard(boardSize,board);
+	printf("---------------------\n\n");
+
+	//Allow each thread to execute its steps on the board
+	int steps;
+	for (int i=0;i<maxSteps;i++){
+		for (int k=0;k<procNum;k++){
+			
+			if (k==procNum-1){
+				steps = (boardSize*boardSize)-threadSteps[k];
+			}
+			else{
+				steps = threadSteps[k+1]-threadSteps[k];
+			}
+			printf("steps %d: %d\n",k,steps);
+			moveRed(startingPos[k], steps, boardSize, &board);
+			moveBlue(startingPos[k], steps, boardSize, &board);
+		
+		}
+	}
+
+	printf("-----Board after----\n");
+	printBoard(boardSize,board);
+	printf("---------------------\n");
 
 	free(threadSteps);
 	free(startingPos);
