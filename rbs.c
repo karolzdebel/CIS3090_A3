@@ -23,10 +23,11 @@ typedef struct Position{
 	int row;
 }Position;
 
-int **board;		// Board with white, red or blue positions
-int colourDen;		// cN: max. colour density in integer percent, 1-100 (stopping condition)
-int tileSize;		// tN: width of one overlay tile, each N x N cells (b mod t=0)
-int boardSize;		// bN: width of board >1, so board size is N x N cells
+int **board;			// Board with white, red or blue positions
+int colourDen;			// cN: max. colour density in integer percent, 1-100 (stopping condition)
+int tileSize;			// tN: width of one overlay tile, each N x N cells (b mod t=0)
+int boardSize;			// bN: width of board >1, so board size is N x N cells
+pthread_t *threadId;	// Ids of all threads
 
 
 Position getPosition(int *threads,int curThread, int boardSize){
@@ -111,7 +112,7 @@ int **boardCopy(){
 	return boardCopy;
 }
 
-void moveRed(void *arg){
+void *moveRed(void *arg){
 
 	int **copy = boardCopy();
 	int steps;
@@ -121,6 +122,8 @@ void moveRed(void *arg){
 	pos.col = ((int*)arg)[0];
 	pos.row = ((int*)arg)[1];
 	steps = ((int*)arg)[2];
+
+	printf("row:%d\tcol:%d\tsteps:%d\n",pos.row,pos.col,steps);
 
 	curPos = pos;
 
@@ -134,7 +137,6 @@ void moveRed(void *arg){
 				board[curPos.row][0] = RED;
 			}
 		}
-
 		//Move any reds with a white to the right
 		else if (copy[curPos.row][curPos.col] == RED && copy[curPos.row][curPos.col+1] == WHITE){
 			board[curPos.row][curPos.col] = WHITE; 
@@ -151,20 +153,24 @@ void moveRed(void *arg){
 		}
 	}
 	freeBoard(&copy);
+
+	pthread_exit(EXIT_SUCCESS);
 }
 
-void moveBlue(void *arg){
+void *moveBlue(void *arg){
 
 	int **copy = boardCopy();
 	int steps;
 	Position pos;
 	Position curPos;
 
-	pos.col = ((int*)arg)[0];
-	pos.row = ((int*)arg)[1];
+	pos.row = ((int*)arg)[0];
+	pos.col = ((int*)arg)[1];
 	steps = ((int*)arg)[2];
 
 	curPos = pos;
+
+	printf("row:%d\tcol:%d\tsteps:%d\n",pos.row,pos.col,steps);
 
 	//Move blues in assigned positions
 	for (int i=0;i<steps;i++){
@@ -193,6 +199,8 @@ void moveBlue(void *arg){
 	}
 
 	freeBoard(&copy);
+
+	pthread_exit(EXIT_SUCCESS);
 }
 
 int **createBoard(int seed){
@@ -329,27 +337,49 @@ int main(int argc, char **argv){
 	startingPos = malloc(sizeof(Position)*procNum);		
 	for (int i=0;i<procNum;i++){
 		startingPos[i] = getPosition(threadSteps,i,boardSize);
+		printf("thread:%d\tcol:%d\trow:%d\n",i,startingPos[i].col,startingPos[i].row);
 	}
 
 	//Get arguments for each thread
 	threadArg = getThreadArgs(procNum,threadSteps,startingPos);
 
+	//Create thread ID's
+	threadId = malloc(sizeof(pthread_t)*procNum);
+
+	printf("---Board Before---\n");
+	printBoard(boardSize,board);
+	printf("------------------\n");
+
 	//Allow each thread to execute its steps on the board
 	int steps;
 	for (int i=0;i<maxSteps;i++){
-		for (int k=0;k<procNum;k++){
-			moveRed( (void*)threadArg[k] );
 		
+		printBoard(boardSize,board);
+		
+		for (int k=0;k<procNum;k++){
+			pthread_create(&(threadId[k]),NULL,moveRed,threadArg[k]);
 		}
 
 		for (int k=0;k<procNum;k++){
-			moveBlue( (void*)threadArg[k] );
-		
+			pthread_join(threadId[k],NULL);
+		}
+
+		for (int k=0;k<procNum;k++){
+			pthread_create(&(threadId[k]),NULL,moveBlue,threadArg[k]);
+		}
+
+		for (int k=0;k<procNum;k++){
+			pthread_join(threadId[k],NULL);
 		}
 	}
 
+	printf("---Board After---\n");
+	printBoard(boardSize,board);
+	printf("------------------\n");
+
 	free(threadSteps);
 	free(startingPos);
+	free(threadId);
 	freeBoard(&board);
 	freeArg(&threadArg,procNum);
 
