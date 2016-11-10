@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <semaphore.h>
 #include <stdbool.h>
+#include <string.h>
 
 #ifndef _WIN32 // if we're not on Windows
 #define _POSIX_C_SOURCE 200112L // get barriers on Linux
@@ -17,6 +18,10 @@
 #define WHITE 0
 #define RED 1
 #define BLUE 2
+#define STEP 2
+#define HALFSTEP 1
+#define AUTO 0
+#define OUT_FILE -1
 
 typedef struct Position{
 	int col;
@@ -24,11 +29,11 @@ typedef struct Position{
 }Position;
 
 int **board;			// Board with white, red or blue positions
-int colourDen;			// cN: max. colour density in integer percent, 1-100 (stopping condition)
+double colourDen;			// cN: max. colour density in integer percent, 1-100 (stopping condition)
 int tileSize;			// tN: width of one overlay tile, each N x N cells (b mod t=0)
 int boardSize;			// bN: width of board >1, so board size is N x N cells
 pthread_t *threadId;	// Ids of all threads
-
+int *tileDen;			//Highest density in each tile
 
 Position getPosition(int *threads,int curThread, int boardSize){
 	Position pos;
@@ -83,20 +88,48 @@ void printBoard(int boardSize, int **board){
 		for(int k=0;k<boardSize;k++){
 
 			if (board[i][k] == WHITE){
-				printf("~");	
+				fprintf(stdout,"=");	
 			}
 			else if (board[i][k] == RED){
-				printf("R");
+				fprintf(stdout,">");
 			}
 			else if(board[i][k] == BLUE){
-				printf("B");
+				fprintf(stdout,"V");
 			}
 
 			if (k==boardSize-1){
-				printf("\n");
+				fprintf(stdout,"\n");
 			}
 		}
 	}
+}
+
+void writeBoard(int boardSize, int **board, FILE *file){
+	char boardString[boardSize*boardSize+boardSize+5];
+	int curChar =0;
+
+	for (int i=0;i<boardSize;i++){
+		for(int k=0;k<boardSize;k++){
+
+			if (board[i][k] == WHITE){
+				boardString[curChar] = '=';	
+			}
+			else if (board[i][k] == RED){
+				boardString[curChar] = '>';
+			}
+			else if(board[i][k] == BLUE){
+				boardString[curChar] = 'V';
+			}
+			curChar++;
+
+			if (k==boardSize-1){
+				boardString[curChar] = '\n';
+				curChar++;
+			}
+		}
+	}
+	fputs(boardString,file);
+
 }
 
 int **boardCopy(){
@@ -112,6 +145,106 @@ int **boardCopy(){
 	return boardCopy;
 }
 
+void progTerminate(){
+	printf("program terminated;");
+	exit(0);
+}
+
+int **getThresholdArgs(int procNum){
+	int **args = malloc(sizeof(int*)*procNum);
+	int threadsUsed;
+	int tileNum = (boardSize*boardSize)/(tileSize*tileSize);
+	int threadsPerTile;
+	int tilesExtra;
+	int curTile=1;
+
+	if (procNum > tileNum){
+		threadsUsed = tileNum;		//Use less threads since more arent needed
+	}
+	else{
+		threadsUsed = procNum;		//Use all thread
+	}
+
+	threadsPerTile = tileNum/threadsUsed;
+	tilesExtra = tileNum-(threadsPerTile*threadsUsed);
+
+	for (int i=0;i<procNum;i++){
+		args[i] = malloc(sizeof(int)*2);
+		args[i][0] = curTile;				//Tile this thread will begin on
+
+		args[i][1] = threadsPerTile;		//Amount of tiles this thread will read
+
+		if (tilesExtra > 0){
+			args[i][1]++;					//Add any remaining tiles to this thread
+			tilesExtra--;
+		}
+
+		curTile += args[i][1];				//Next tile starts on the tile following where previous thread finished
+	}
+
+	return args;
+}
+
+void *checkThreshold(void *arg){
+	int startingTile = ((int*)arg)[0];	//Tile to begin computation on
+	int tileNum = ((int*)arg)[1];		//Number of tiles to read
+	int red, blue;						//Number of red, blue tiles
+	double redDen, blueDen;				//Red and blue tile density
+	double highestDen =0;
+	Position startPos;					//Starting position of tile
+
+	//Go through all assigned tiles
+	for (int j=0;j<tileNum;j++){
+
+		red = blue = 0;	//Reset counters
+
+		//Find position of tile
+		if (startingTile == 1){
+			startPos.col = 0;
+		}
+		else{
+			startPos.col = ((startingTile-1)*tileSize) % boardSize;
+		}
+		if (startingTile == 1){
+			startPos.row = 0;
+		}
+		else{
+			startPos.row = tileSize*((tileSize*(startingTile-1))/boardSize);
+		}
+
+		//Go through all elements in tile and count red and blue
+		for (int i=startPos.row;i<startPos.row+tileSize;i++){
+			for (int k=startPos.col;k<startPos.col+tileSize;k++){
+				if (board[i][k] == RED){
+					red++;
+				}
+				else if (board[i][k] == BLUE){
+					blue++;
+				}
+			}
+		}
+
+		//Check red ratio
+		redDen = (double)red/(tileSize*tileSize);
+		blueDen = (double)blue/(tileSize*tileSize);
+
+		if (redDen > highestDen){
+			highestDen = redDen;
+		}
+		if(blueDen > highestDen){
+			highestDen = blueDen;
+		}
+
+		tileDen[startingTile-1] = (int)(100*highestDen);
+
+		//Go to next tilee;
+		startingTile++;
+	}
+
+	pthread_exit(EXIT_SUCCESS);
+
+}
+
 void *moveRed(void *arg){
 
 	int **copy = boardCopy();
@@ -122,8 +255,6 @@ void *moveRed(void *arg){
 	pos.col = ((int*)arg)[0];
 	pos.row = ((int*)arg)[1];
 	steps = ((int*)arg)[2];
-
-	printf("row:%d\tcol:%d\tsteps:%d\n",pos.row,pos.col,steps);
 
 	curPos = pos;
 
@@ -169,8 +300,6 @@ void *moveBlue(void *arg){
 	steps = ((int*)arg)[2];
 
 	curPos = pos;
-
-	printf("row:%d\tcol:%d\tsteps:%d\n",pos.row,pos.col,steps);
 
 	//Move blues in assigned positions
 	for (int i=0;i<steps;i++){
@@ -247,6 +376,81 @@ int **getThreadArgs(int threadNum, int *threadSteps, Position *startingPos){
 	return arg;
 }
 
+void finishProgram(double compTime, int cmdArgs[], int steps, int highestDen){
+	FILE *file = fopen("redblue.txt","w+");
+	char args[1000];
+	//Write board to file
+
+	writeBoard(boardSize,board,file);
+
+	sprintf(args,"pN:%d\tbN:%d\ttN:%d\tcN:%d\tmN:%d",cmdArgs[0],cmdArgs[1],cmdArgs[2],cmdArgs[3],cmdArgs[4]);
+	fprintf(stdout,"pN:%d\tbN:%d\ttN:%d\tcN:%d\tmN:%d",cmdArgs[0],cmdArgs[1],cmdArgs[2],cmdArgs[3],cmdArgs[4]);
+	fputs(args,file);
+
+	if (cmdArgs[5] != UNINIT){
+		sprintf(args,"\tsN:%d",cmdArgs[5]);
+		fprintf(stdout,"\tsN:%d",cmdArgs[5]);
+		fputs(args,file);
+	}
+	if (cmdArgs[6] == true){
+		sprintf(args,"\ti:true");
+		fprintf(stdout,"\ti:true");
+		fputs(args,file);
+	}
+
+	sprintf(args,"\trequired steps:%d\thighest tile density:%d\ttime:%lf\n",steps,highestDen,compTime);
+	fprintf(stdout,"\trequired steps:%d\thighest tile density:%d\ttime:%lf\n",steps,highestDen,compTime);
+	fputs(args,file);
+	exit(EXIT_SUCCESS);
+}
+
+int getInput(){
+	char input[1000];
+	int stepNum=0;
+
+	fprintf(stdout,"<Enter>: i.e., empty input; perform one full step\n");
+	fprintf(stdout,"#: perform (integer) # full steps\n");
+	fprintf(stdout,"h: perform one half step\n");
+	fprintf(stdout,"c: continue in automatic mode to normal termination and output file\n");
+	fprintf(stdout,"x: output current board into file and exit\n");
+
+	while (true){
+		if (fgets(input, 1000, stdin) == NULL){
+			fprintf(stdout,"Error\n");
+			continue;
+		}
+		switch(input[0]){
+
+			case '\n':
+				return STEP;
+				break;
+
+			case 'h':
+				return HALFSTEP;
+				break;
+
+			case 'c':
+				return AUTO;
+				break;
+
+			case 'x':
+				return OUT_FILE;
+				break;
+			default:
+				stepNum = strtol(input,NULL,10);
+				if (stepNum > 0){
+					return STEP*stepNum;	
+				}
+				else{
+					fprintf(stdout,"Error\n");
+				}
+		}
+		fflush(stdin);
+	}
+
+	return STEP;
+}
+
 int main(int argc, char **argv){
 	int procNum = UNINIT;	// pN: no. of processors (threads) to use
 	int maxSteps = UNINIT;	// mN: max. no. of full steps (additional stopping condition)
@@ -254,6 +458,13 @@ int main(int argc, char **argv){
 	bool interMode = false;	// i: optional interactive mode switch
 	int *threadSteps;		// How many steps each thread will executing
 	int **threadArg;		// Arguments stored in array for each thread
+	int **threshArg;
+	int procThresh;
+	int tileNum;
+	int input;
+	int completedSteps=0;
+	int stepsTillInter = 0;
+	double topDen=0;
 	Position *startingPos;  // What row and column each thread will begin computation at
 
 	colourDen = UNINIT;
@@ -295,6 +506,7 @@ int main(int argc, char **argv){
 				argv[i][0] = ' ';
 
 				colourDen = strtol(argv[i],NULL,10);
+				colourDen /= 100;
 				if (colourDen > 100 || colourDen < 0){
 					fprintf(stderr,"ERROR: Colour density outside of 0-100 range. Exiting.\n");
 					return(EXIT_FAILURE);
@@ -317,6 +529,8 @@ int main(int argc, char **argv){
 		}
 	}
 
+	int cmdArgs[7] = {procNum,boardSize,tileSize,(int)(colourDen*100),maxSteps,randSeed,interMode};
+
 	if (procNum == UNINIT || boardSize == UNINIT 
 			|| tileSize == UNINIT || colourDen == UNINIT 
 			|| maxSteps == UNINIT){
@@ -332,55 +546,132 @@ int main(int argc, char **argv){
 
 	board = createBoard(randSeed);						//Generate the board
 	threadSteps = getThreadSteps(boardSize,procNum);	//Get the number of steps each thread will perform
-	
+
 	//Get starting position for each thread
 	startingPos = malloc(sizeof(Position)*procNum);		
 	for (int i=0;i<procNum;i++){
 		startingPos[i] = getPosition(threadSteps,i,boardSize);
-		printf("thread:%d\tcol:%d\trow:%d\n",i,startingPos[i].col,startingPos[i].row);
 	}
 
 	//Get arguments for each thread
 	threadArg = getThreadArgs(procNum,threadSteps,startingPos);
+	threshArg = getThresholdArgs(procNum);
 
 	//Create thread ID's
 	threadId = malloc(sizeof(pthread_t)*procNum);
 
-	printf("---Board Before---\n");
-	printBoard(boardSize,board);
-	printf("------------------\n");
+	tileNum = (boardSize*boardSize)/(tileSize*tileSize);
+	tileDen = malloc(sizeof(int)*tileNum);
+	
+	if (procNum > tileNum){
+		procThresh = tileNum;
+	}
+	else{
+		procThresh = procNum;
+	}
 
 	//Allow each thread to execute its steps on the board
-	int steps;
 	for (int i=0;i<maxSteps;i++){
+
+		//interactive mode
+		if (interMode && stepsTillInter == 0){
+			input = getInput();
+
+			if (input == HALFSTEP && stepsTillInter == 0){
+				stepsTillInter = HALFSTEP;
+			}
+			else if (input == AUTO){
+				interMode = false;
+			}
+			else if (input == OUT_FILE){
+				//write to file
+			}
+			else if (input == STEP){
+				stepsTillInter = STEP;
+			}
+			else{
+				stepsTillInter = input;
+			}
+
+		}
+
+		topDen=0;
 		
-		printBoard(boardSize,board);
-		
+		//check threshold
+		for (int k=0;k<procThresh;k++){
+			pthread_create(&(threadId[k]),NULL,checkThreshold,threshArg[k]);
+		}
+		for (int k=0;k<procThresh;k++){
+			pthread_join(threadId[k],NULL);
+		}
+
+		//check highest density
+		for (int k=0;k<tileNum;k++){
+			if (tileDen[k] > topDen){
+				topDen = tileDen[k];
+			}
+
+			//check for termination
+			if (topDen > (int)(100*colourDen)){
+				finishProgram(0.0,cmdArgs,completedSteps,topDen);
+			}
+		}
+
+		//move red
 		for (int k=0;k<procNum;k++){
 			pthread_create(&(threadId[k]),NULL,moveRed,threadArg[k]);
 		}
-
 		for (int k=0;k<procNum;k++){
 			pthread_join(threadId[k],NULL);
 		}
 
+		if (interMode && stepsTillInter > 0){
+			stepsTillInter--;
+		}
+		if (interMode && stepsTillInter == 0){
+			input = getInput();
+
+			if (input == HALFSTEP && stepsTillInter == 0){
+				stepsTillInter = HALFSTEP;
+			}
+			else if (input == AUTO){
+				interMode = false;
+			}
+			else if (input == OUT_FILE){
+				//write to file
+			}
+			else if (input == STEP){
+				stepsTillInter = STEP;
+			}
+			else{
+				stepsTillInter = input;
+			}
+		}
+
+		//move blue
 		for (int k=0;k<procNum;k++){
 			pthread_create(&(threadId[k]),NULL,moveBlue,threadArg[k]);
 		}
 
+		if (interMode && stepsTillInter > 0){
+			stepsTillInter--;
+		}
+
 		for (int k=0;k<procNum;k++){
 			pthread_join(threadId[k],NULL);
 		}
+
+		completedSteps++;
 	}
 
-	printf("---Board After---\n");
-	printBoard(boardSize,board);
-	printf("------------------\n");
+	finishProgram(0.0,cmdArgs,completedSteps,topDen);
 
 	free(threadSteps);
 	free(startingPos);
 	free(threadId);
+	free(tileDen);
 	freeBoard(&board);
+	freeArg(&threshArg,procNum);
 	freeArg(&threadArg,procNum);
 
 	return 0;
